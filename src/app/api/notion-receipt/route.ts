@@ -1,4 +1,3 @@
-// app/api/notion-receipt/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -7,9 +6,6 @@ import heicConvert from "heic-convert"; // npm i heic-convert
 const NOTION_TOKEN = process.env.NOTION_TOKEN!;
 const DB = process.env.NOTION_DATABASE_ID!;
 const NOTION_API = "https://api.notion.com/v1";
-
-// NOTE: This Notion version works with file uploads in practice.
-// If you ever hit issues, try upgrading the Notion-Version string.
 const HEAD = {
   Authorization: `Bearer ${NOTION_TOKEN}`,
   "Notion-Version": "2022-06-28",
@@ -27,31 +23,44 @@ export async function POST(req: Request) {
     const notes = (form.get("notes") as string | null)?.trim() || "";
     const title = `Receipt — ${date}`;
 
-    // --- Convert HEIC to JPEG (before uploading) ---
+    // ---- HEIC/HEIF → JPEG (type-safe) ----
     let uploadFile: File = file;
     const isHeic =
       file.type === "image/heic" ||
       file.type === "image/heif" ||
-      /\.hei[c|f]$/i.test(file.name);
+      /\.hei[cf]$/i.test(file.name);
 
     if (isHeic) {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const jpeg = await heicConvert({ buffer, format: "JPEG", quality: 0.9 });
-      uploadFile = new File([jpeg], file.name.replace(/\.hei[c|f]$/i, ".jpg"), {
+      // Get ArrayBuffer for the HEIC
+      const inputBuf = Buffer.from(await file.arrayBuffer());
+      // Slice to a clean ArrayBuffer view (what heic-convert typings expect)
+      const inputAB = inputBuf.buffer.slice(
+        inputBuf.byteOffset,
+        inputBuf.byteOffset + inputBuf.byteLength
+      );
+      // heic-convert returns an ArrayBuffer (or Buffer depending on version); both are fine
+      const outAB = (await heicConvert({
+        buffer: inputAB as ArrayBuffer,
+        format: "JPEG",
+        quality: 0.9,
+      })) as ArrayBuffer;
+
+      // Wrap back into a Buffer for File()
+      const outBuf = Buffer.isBuffer(outAB) ? outAB : Buffer.from(outAB);
+      uploadFile = new File([outBuf], file.name.replace(/\.hei[cf]$/i, ".jpg"), {
         type: "image/jpeg",
       });
     }
 
-    // (Optional) Reject huge files (Notion single-part uploads are small; ~20MB typical)
+    // Optional guard: Notion single-part uploads are small (~20 MB typical)
     const MAX_SINGLE = 20 * 1024 * 1024;
     if (uploadFile.size > MAX_SINGLE) {
       return new NextResponse("File too large for single-part upload", { status: 413 });
     }
 
-    // --- Try Notion direct file upload ---
+    // ---- Notion direct file upload ----
     let fileUploadId: string | null = null;
     try {
-      // 1) Create upload handle
       const createFU = await fetch(`${NOTION_API}/file_uploads`, {
         method: "POST",
         headers: { ...HEAD, "Content-Type": "application/json" },
@@ -60,29 +69,26 @@ export async function POST(req: Request) {
 
       if (createFU.ok) {
         const fu = await createFU.json(); // { id, ... }
-
-        // 2) Send bytes
         const sendFD = new FormData();
         sendFD.append("file", uploadFile);
+
         const sendFU = await fetch(`${NOTION_API}/file_uploads/${fu.id}/send`, {
           method: "POST",
           headers: HEAD as any, // let FormData set Content-Type
           body: sendFD,
         });
         if (!sendFU.ok) throw new Error(await sendFU.text());
-
         fileUploadId = fu.id;
       }
     } catch {
-      // Ignore: we'll still create the page without a file if upload isn't supported
+      // If uploads aren't supported for your workspace/integration, we still create the page.
     }
 
-    // --- Build properties (match your Notion column names exactly) ---
+    // ---- Properties (match your Notion columns exactly) ----
     const properties: any = {
       Name: { title: [{ text: { content: title } }] },
       Date: { date: { start: date } },
     };
-
     const amount = parseFloat(amountRaw.replace(",", "."));
     if (!Number.isNaN(amount)) properties.Amount = { number: amount };
     if (merchant) properties.Merchant = { rich_text: [{ text: { content: merchant } }] };
@@ -93,21 +99,19 @@ export async function POST(req: Request) {
         files: [
           {
             type: "file_upload",
-            file_upload: { id: fileUploadId }, // <-- correct key
+            file_upload: { id: fileUploadId }, // ✅ correct key
             name: uploadFile.name || "receipt.jpg",
           },
         ],
       };
     }
 
-    // --- Create the page ---
     const createPage = await fetch(`${NOTION_API}/pages`, {
       method: "POST",
       headers: { ...HEAD, "Content-Type": "application/json" },
       body: JSON.stringify({
         parent: { database_id: DB },
         properties,
-        // Optional: also include as a content block:
         // children: fileUploadId ? [{
         //   object: "block",
         //   type: "image",
