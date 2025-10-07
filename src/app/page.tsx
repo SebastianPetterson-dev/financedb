@@ -1,6 +1,12 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
 
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -12,17 +18,17 @@ export default function HomePage() {
   const [status, setStatus] = useState("");
   const [sending, setSending] = useState(false);
 
-  // PWA install prompt
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [canInstall, setCanInstall] = useState(false);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
-    const handler = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
+    const handler = (e: Event) => {
+      const ev = e as BeforeInstallPromptEvent;
+      ev.preventDefault();
+      setDeferredPrompt(ev);
       setCanInstall(true);
     };
     window.addEventListener("beforeinstallprompt", handler);
@@ -31,14 +37,14 @@ export default function HomePage() {
 
   async function handleInstall() {
     if (!deferredPrompt) return;
-    deferredPrompt.prompt();
+    await deferredPrompt.prompt();
     await deferredPrompt.userChoice;
     setDeferredPrompt(null);
     setCanInstall(false);
   }
 
   function onFileChange(f: File | null) {
-    setFile(f || null);
+    setFile(f);
     setPreview(f ? URL.createObjectURL(f) : null);
   }
 
@@ -49,12 +55,9 @@ export default function HomePage() {
       return;
     }
 
-    // Normalize amount to dot-decimal for backend
-    const normalizedAmount = amount.replace(",", ".").trim();
-
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("amount", normalizedAmount);
+    fd.append("amount", amount.replace(",", ".").trim());
     fd.append("merchant", merchant);
     fd.append("date", date);
     fd.append("notes", notes);
@@ -64,15 +67,19 @@ export default function HomePage() {
 
     try {
       const res = await fetch("/api/notion-receipt", { method: "POST", body: fd });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t);
+      }
       setStatus("✅ Done! Check your Finances DB in Notion.");
       setFile(null);
       setPreview(null);
       setAmount("");
       setMerchant("");
       setNotes("");
-    } catch (err: any) {
-      setStatus("❌ Error: " + err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus("❌ Error: " + msg);
     } finally {
       setSending(false);
     }
@@ -95,11 +102,16 @@ export default function HomePage() {
         />
 
         {preview && (
-          <img
-            src={preview}
-            alt="preview"
-            className="w-32 h-32 object-cover rounded border border-gray-300"
-          />
+          <div className="w-32 h-32 relative">
+            <Image
+              src={preview}
+              alt="preview"
+              fill
+              className="object-cover rounded border border-gray-300"
+              // blob: URLs are fine with unoptimized to skip Next Image optimization
+              unoptimized
+            />
+          </div>
         )}
 
         <input

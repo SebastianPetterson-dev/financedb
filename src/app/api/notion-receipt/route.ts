@@ -1,15 +1,19 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import heicConvert from "heic-convert"; // npm i heic-convert
+import heicConvert from "heic-convert";
 
 const NOTION_TOKEN = process.env.NOTION_TOKEN!;
 const DB = process.env.NOTION_DATABASE_ID!;
 const NOTION_API = "https://api.notion.com/v1";
-const HEAD = {
+
+const HEAD: Record<string, string> = {
   Authorization: `Bearer ${NOTION_TOKEN}`,
   "Notion-Version": "2022-06-28",
-} as const;
+};
+
+type NotionFileUploadCreateRes = { id: string };
+type NotionError = { object: "error"; status: number; code: string; message: string };
 
 export async function POST(req: Request) {
   try {
@@ -17,13 +21,13 @@ export async function POST(req: Request) {
     const file = form.get("file") as File | null;
     if (!file) return new NextResponse("Missing file", { status: 400 });
 
-    const amountRaw = (form.get("amount") as string | null)?.trim() || "";
-    const merchant = (form.get("merchant") as string | null)?.trim() || "";
-    const date = (form.get("date") as string | null) || new Date().toISOString().slice(0, 10);
-    const notes = (form.get("notes") as string | null)?.trim() || "";
+    const amountRaw = (form.get("amount") as string | null)?.trim() ?? "";
+    const merchant = (form.get("merchant") as string | null)?.trim() ?? "";
+    const date = (form.get("date") as string | null) ?? new Date().toISOString().slice(0, 10);
+    const notes = (form.get("notes") as string | null)?.trim() ?? "";
     const title = `Receipt — ${date}`;
 
-    // ---- HEIC/HEIF → JPEG (type-safe) ----
+    // HEIC/HEIF → JPEG (type-safe)
     let uploadFile: File = file;
     const isHeic =
       file.type === "image/heic" ||
@@ -31,34 +35,24 @@ export async function POST(req: Request) {
       /\.hei[cf]$/i.test(file.name);
 
     if (isHeic) {
-      // Get ArrayBuffer for the HEIC
       const inputBuf = Buffer.from(await file.arrayBuffer());
-      // Slice to a clean ArrayBuffer view (what heic-convert typings expect)
-      const inputAB = inputBuf.buffer.slice(
-        inputBuf.byteOffset,
-        inputBuf.byteOffset + inputBuf.byteLength
-      );
-      // heic-convert returns an ArrayBuffer (or Buffer depending on version); both are fine
+      const inputAB = inputBuf.buffer.slice(inputBuf.byteOffset, inputBuf.byteOffset + inputBuf.byteLength);
       const outAB = (await heicConvert({
         buffer: inputAB as ArrayBuffer,
         format: "JPEG",
         quality: 0.9,
       })) as ArrayBuffer;
-
-      // Wrap back into a Buffer for File()
-      const outBuf = Buffer.isBuffer(outAB) ? outAB : Buffer.from(outAB);
-      uploadFile = new File([outBuf], file.name.replace(/\.hei[cf]$/i, ".jpg"), {
-        type: "image/jpeg",
-      });
+      const outBuf = Buffer.from(outAB);
+      uploadFile = new File([outBuf], file.name.replace(/\.hei[cf]$/i, ".jpg"), { type: "image/jpeg" });
     }
 
-    // Optional guard: Notion single-part uploads are small (~20 MB typical)
+    // Optional size guard (single-part upload)
     const MAX_SINGLE = 20 * 1024 * 1024;
     if (uploadFile.size > MAX_SINGLE) {
       return new NextResponse("File too large for single-part upload", { status: 413 });
     }
 
-    // ---- Notion direct file upload ----
+    // Notion direct file upload
     let fileUploadId: string | null = null;
     try {
       const createFU = await fetch(`${NOTION_API}/file_uploads`, {
@@ -68,24 +62,28 @@ export async function POST(req: Request) {
       });
 
       if (createFU.ok) {
-        const fu = await createFU.json(); // { id, ... }
+        const fu = (await createFU.json()) as NotionFileUploadCreateRes;
         const sendFD = new FormData();
         sendFD.append("file", uploadFile);
 
         const sendFU = await fetch(`${NOTION_API}/file_uploads/${fu.id}/send`, {
           method: "POST",
-          headers: HEAD as any, // let FormData set Content-Type
+          headers: HEAD, // FormData sets Content-Type boundary
           body: sendFD,
         });
-        if (!sendFU.ok) throw new Error(await sendFU.text());
+
+        if (!sendFU.ok) {
+          const t = await sendFU.text();
+          throw new Error(t);
+        }
         fileUploadId = fu.id;
       }
     } catch {
-      // If uploads aren't supported for your workspace/integration, we still create the page.
+      // If uploads aren't supported, continue and create the page without a file
     }
 
-    // ---- Properties (match your Notion columns exactly) ----
-    const properties: any = {
+    // Properties (match your Notion columns)
+    const properties: Record<string, unknown> = {
       Name: { title: [{ text: { content: title } }] },
       Date: { date: { start: date } },
     };
@@ -99,7 +97,7 @@ export async function POST(req: Request) {
         files: [
           {
             type: "file_upload",
-            file_upload: { id: fileUploadId }, // ✅ correct key
+            file_upload: { id: fileUploadId },
             name: uploadFile.name || "receipt.jpg",
           },
         ],
@@ -112,11 +110,6 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         parent: { database_id: DB },
         properties,
-        // children: fileUploadId ? [{
-        //   object: "block",
-        //   type: "image",
-        //   image: { type: "file_upload", file_upload: { id: fileUploadId } }
-        // }] : []
       }),
     });
 
@@ -126,7 +119,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return new NextResponse(e?.message || "Server error", { status: 500 });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return new NextResponse(msg || "Server error", { status: 500 });
   }
 }
