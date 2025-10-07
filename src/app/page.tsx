@@ -66,7 +66,13 @@ export default function HomePage() {
     setStatus("Sending to Notion…");
 
     try {
-      const res = await fetch("/api/notion-receipt", { method: "POST", body: fd });
+      const res = await fetch("/api/notion-receipt", {
+        method: "POST",
+        headers: {
+          "x-api-key": process.env.NEXT_PUBLIC_API_KEY || "",
+        },
+        body: fd,
+      });
       if (!res.ok) {
         const t = await res.text();
         throw new Error(t);
