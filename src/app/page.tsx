@@ -1,103 +1,161 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "react";
+
+export default function HomePage() {
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [amount, setAmount] = useState("");
+  const [merchant, setMerchant] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [status, setStatus] = useState("");
+  const [sending, setSending] = useState(false);
+
+  // PWA install prompt
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [canInstall, setCanInstall] = useState(false);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setCanInstall(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  async function handleInstall() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
+    setCanInstall(false);
+  }
+
+  function onFileChange(f: File | null) {
+    setFile(f || null);
+    setPreview(f ? URL.createObjectURL(f) : null);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file) {
+      alert("Please select a receipt photo first.");
+      return;
+    }
+
+    // Normalize amount to dot-decimal for backend
+    const normalizedAmount = amount.replace(",", ".").trim();
+
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("amount", normalizedAmount);
+    fd.append("merchant", merchant);
+    fd.append("date", date);
+    fd.append("notes", notes);
+
+    setSending(true);
+    setStatus("Sending to Notion…");
+
+    try {
+      const res = await fetch("/api/notion-receipt", { method: "POST", body: fd });
+      if (!res.ok) throw new Error(await res.text());
+      setStatus("✅ Done! Check your Finances DB in Notion.");
+      setFile(null);
+      setPreview(null);
+      setAmount("");
+      setMerchant("");
+      setNotes("");
+    } catch (err: any) {
+      setStatus("❌ Error: " + err.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="min-h-screen flex flex-col items-center justify-center p-8 bg-white text-black">
+      <h1 className="text-2xl font-bold mb-4">Upload Receipt → Notion</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4 w-full max-w-md bg-gray-50 rounded-lg p-6 shadow"
+      >
+        <input
+          type="file"
+          accept="image/*,.heic,.pdf"
+          capture="environment"
+          onChange={(e) => onFileChange(e.target.files?.[0] || null)}
+          className="p-2 rounded border border-gray-300"
+        />
+
+        {preview && (
+          <img
+            src={preview}
+            alt="preview"
+            className="w-32 h-32 object-cover rounded border border-gray-300"
+          />
+        )}
+
+        <input
+          type="number"
+          step="0.01"
+          placeholder="Amount (e.g. 129.95)"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          className="p-2 rounded border border-gray-300"
+        />
+
+        <input
+          type="text"
+          placeholder="Merchant"
+          value={merchant}
+          onChange={(e) => setMerchant(e.target.value)}
+          className="p-2 rounded border border-gray-300"
+        />
+
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="p-2 rounded border border-gray-300"
+        />
+
+        <input
+          type="text"
+          placeholder="Notes (optional)"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="p-2 rounded border border-gray-300"
+        />
+
+        <button
+          type="submit"
+          disabled={sending}
+          className={`py-2 rounded transition ${
+            sending ? "bg-gray-400 text-white" : "bg-black text-white hover:opacity-80"
+          }`}
+        >
+          {sending ? "Sending…" : "Send to Notion"}
+        </button>
+
+        {canInstall && (
+          <button
+            type="button"
+            onClick={handleInstall}
+            className="py-2 rounded border border-gray-300 hover:bg-gray-100"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+            Install App
+          </button>
+        )}
+
+        <p className="text-sm text-gray-600">{status}</p>
+      </form>
+    </main>
   );
 }
